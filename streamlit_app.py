@@ -53,7 +53,7 @@ class DummyVideoTransformer(VideoTransformerBase):
         img.fill(30)  # Dark background
         
         # Add title text
-        cv2.putText(img, "DUMMY CAMERA MODE", (50, 50), 
+        cv2.putText(img, "CAMERA MODE", (50, 50), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         cv2.putText(img, "Simulating arm exercises...", (50, 100), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -421,14 +421,14 @@ def main():
     
     camera_mode = st.selectbox(
         "Select Camera Mode:",
-        ["Real Camera", "Private Camera (No Tracking)", "Dummy Camera (for testing/deployment)"],
-        help="Choose Real Camera for full tracking, Private Camera for no data logging, or Dummy Camera for testing"
+        ["Real Camera", "Private Camera (No Tracking)", "Camera (for testing/deployment)"],
+        help="Choose Real Camera for full tracking, Private Camera for no data logging, or  Camera for testing"
     )
     
-    if camera_mode == "Dummy Camera (for testing/deployment)":
+    if camera_mode == "Camera (for testing/deployment)":
         st.markdown("""
         <div style="background-color: #e7f3ff; border: 1px solid #b6d7ff; color: #1e40af; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
-            <strong>🤖 Dummy camera mode will simulate realistic arm movement patterns for testing purposes.</strong>
+            <strong>🤖  camera mode will simulate realistic arm movement patterns for testing purposes.</strong>
         </div>
         """, unsafe_allow_html=True)
     elif camera_mode == "Private Camera (No Tracking)":
@@ -497,7 +497,7 @@ def main():
         """, unsafe_allow_html=True)
 
         # Choose video processor based on camera mode
-        if camera_mode == "Dummy Camera (for testing/deployment)":
+        if camera_mode == "Camera (for testing/deployment)":
             video_processor = DummyVideoTransformer
         elif camera_mode == "Private Camera (No Tracking)":
             video_processor = PrivateVideoTransformer
@@ -522,7 +522,7 @@ def main():
                     "width": {"min": 320, "ideal": 640, "max": 1280},
                     "height": {"min": 240, "ideal": 480, "max": 720},
                     "frameRate": {"min": 5, "ideal": 15, "max": 30}
-                } if camera_mode != "Dummy Camera (for testing/deployment)" else False,
+                } if camera_mode != "Camera (for testing/deployment)" else False,
                 "audio": False
             },
         )
@@ -574,9 +574,9 @@ def main():
     timer_placeholder = st.empty()
 
     # Main processing loop with optimized data collection
-    if camera_mode == "Dummy Camera (for testing/deployment)":
+    if camera_mode == "Camera (for testing/deployment)":
         # For dummy camera, we can run without webrtc context
-        if st.button("Start Dummy Session"):
+        if st.button("Start Session"):
             dummy_transformer = DummyVideoTransformer()
             
             # Simulate real-time data collection
@@ -763,8 +763,8 @@ def main():
             time.sleep(0.033)  # ~30 FPS limit
 
     # After stop - show results if we have data
-    if (camera_mode != "Dummy Camera (for testing/deployment)" and not ctx.state.playing) or \
-       (camera_mode == "Dummy Camera (for testing/deployment)" and len(st.session_state.left_angles) > 0):
+    if (camera_mode != "Camera (for testing/deployment)" and not ctx.state.playing) or \
+       (camera_mode == "Camera (for testing/deployment)" and len(st.session_state.left_angles) > 0):
         if st.session_state.last_df is not None or len(st.session_state.left_angles) > 0:
             # Create final dataframe if not exists
             if st.session_state.last_df is None and len(st.session_state.left_angles) > 0:
