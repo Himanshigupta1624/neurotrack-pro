@@ -7,6 +7,8 @@ import time
 import matplotlib.pyplot as plt
 from io import BytesIO
 import pandas as pd
+import math
+import random
 
 # Initialize MediaPipe Pose with optimized settings
 mp_pose = mp.solutions.pose
@@ -34,6 +36,80 @@ def calculate_angle(a, b, c):
     radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
     angle = np.abs(radians * 180.0 / np.pi)
     return 360 - angle if angle > 180 else angle
+
+
+class DummyVideoTransformer(VideoTransformerBase):
+    def __init__(self):
+        self.left_angle = 90
+        self.right_angle = 90
+        self.frame_count = 0
+        self.time_offset = time.time()
+        
+    def transform(self, frame):
+        self.frame_count += 1
+        
+        # Create a dummy frame with exercise simulation
+        img = np.zeros((480, 640, 3), dtype=np.uint8)
+        img.fill(30)  # Dark background
+        
+        # Add title text
+        cv2.putText(img, "DUMMY CAMERA MODE", (50, 50), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(img, "Simulating arm exercises...", (50, 100), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Simulate realistic arm movement patterns
+        t = (time.time() - self.time_offset) * 0.5  # Slow movement
+        
+        # Left arm simulation (moving up and down)
+        left_base_angle = 90 + 60 * math.sin(t)  # Range: 30-150 degrees
+        left_noise = random.uniform(-5, 5)  # Add some realistic noise
+        self.left_angle = max(0, min(180, left_base_angle + left_noise))
+        
+        # Right arm simulation (different pattern)
+        right_base_angle = 90 + 45 * math.sin(t * 0.8 + 1)  # Range: 45-135 degrees
+        right_noise = random.uniform(-5, 5)
+        self.right_angle = max(0, min(180, right_base_angle + right_noise))
+        
+        # Draw stick figure representation
+        center_x, center_y = 320, 240
+        
+        # Body
+        cv2.line(img, (center_x, center_y - 50), (center_x, center_y + 100), (255, 255, 255), 3)
+        
+        # Head
+        cv2.circle(img, (center_x, center_y - 80), 25, (255, 255, 255), 2)
+        
+        # Calculate arm positions based on angles
+        arm_length = 80
+        
+        # Left arm
+        left_rad = math.radians(self.left_angle - 90)  # Convert to radians, adjust for vertical
+        left_end_x = center_x - 50 + int(arm_length * math.cos(left_rad))
+        left_end_y = center_y - 20 + int(arm_length * math.sin(left_rad))
+        cv2.line(img, (center_x - 50, center_y - 20), (left_end_x, left_end_y), (0, 255, 0), 4)
+        cv2.circle(img, (center_x - 50, center_y - 20), 8, (0, 255, 0), -1)  # Shoulder
+        cv2.circle(img, (left_end_x, left_end_y), 6, (0, 255, 0), -1)  # Hand
+        
+        # Right arm
+        right_rad = math.radians(180 - self.right_angle - 90)
+        right_end_x = center_x + 50 + int(arm_length * math.cos(right_rad))
+        right_end_y = center_y - 20 + int(arm_length * math.sin(right_rad))
+        cv2.line(img, (center_x + 50, center_y - 20), (right_end_x, right_end_y), (0, 0, 255), 4)
+        cv2.circle(img, (center_x + 50, center_y - 20), 8, (0, 0, 255), -1)  # Shoulder
+        cv2.circle(img, (right_end_x, right_end_y), 6, (0, 0, 255), -1)  # Hand
+        
+        # Display current angles
+        cv2.putText(img, f"Left: {int(self.left_angle)}°", (50, 400), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(img, f"Right: {int(self.right_angle)}°", (50, 430), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        
+        # Instructions
+        cv2.putText(img, "This simulates rehabilitation exercises", (50, 350), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        
+        return img
 
 
 class VideoTransformer(VideoTransformerBase):
@@ -234,6 +310,33 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
+    # Camera selection
+    st.markdown("""
+    <div class="card">
+        <h3 style="color:#2c3e50; margin-bottom:1rem;">Camera Settings</h3>
+    """, unsafe_allow_html=True)
+    
+    camera_mode = st.selectbox(
+        "Select Camera Mode:",
+        ["Real Camera", "Dummy Camera (for testing/deployment)"],
+        help="Use Dummy Camera if your webcam is not working or for testing purposes"
+    )
+    
+    if camera_mode == "Dummy Camera (for testing/deployment)":
+        st.markdown("""
+        <div style="background-color: #e7f3ff; border: 1px solid #b6d7ff; color: #1e40af; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
+            <strong>🤖 Dummy camera mode will simulate realistic arm movement patterns for testing purposes.</strong>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="background-color: #f0f9ff; border: 1px solid #7dd3fc; color: #0369a1; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
+            <strong>📹 Real camera mode will use your webcam for live pose detection.</strong>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
     # Data collection optimization
     if "data_collection_interval" not in st.session_state:
         st.session_state.data_collection_interval = 5  # Collect data every 5 frames
@@ -265,10 +368,18 @@ def main():
             <h3 style="color:#2c3e50; margin-bottom:1rem;">Live Motion Analysis</h3>
         """, unsafe_allow_html=True)
 
+        # Choose video processor based on camera mode
+        video_processor = DummyVideoTransformer if camera_mode == "Dummy Camera (for testing/deployment)" else VideoTransformer
+
         ctx = webrtc_streamer(
             key="stream",
-            video_processor_factory=VideoTransformer,
-            rtc_configuration={
+            video_processor_factory=video_processor,
+            frontend_rtc_configuration={
+                "iceServers": [
+                    {"urls": ["stun:stun.l.google.com:19302"]}
+                ]
+            },
+            server_rtc_configuration={
                 "iceServers": [
                     {"urls": ["stun:stun.l.google.com:19302"]}
                 ]
@@ -278,7 +389,7 @@ def main():
                     "width": {"min": 320, "ideal": 640, "max": 1280},
                     "height": {"min": 240, "ideal": 480, "max": 720},
                     "frameRate": {"min": 5, "ideal": 15, "max": 30}
-                },
+                } if camera_mode != "Dummy Camera (for testing/deployment)" else False,
                 "audio": False
             },
         )
@@ -320,61 +431,107 @@ def main():
     timer_placeholder = st.empty()
 
     # Main processing loop with optimized data collection
-    while ctx.state.playing:
-        if ctx.video_transformer:
-            st.session_state.frame_counter += 1
+    if camera_mode == "Dummy Camera (for testing/deployment)":
+        # For dummy camera, we can run without webrtc context
+        if st.button("Start Dummy Session"):
+            dummy_transformer = DummyVideoTransformer()
             
-            # Collect data less frequently to reduce memory usage
-            if st.session_state.frame_counter % st.session_state.data_collection_interval == 0:
-                left_angle = ctx.video_transformer.left_angle
-                right_angle = ctx.video_transformer.right_angle
-
+            # Simulate real-time data collection
+            for i in range(100):  # Simulate 100 data points
+                left_angle = dummy_transformer.left_angle
+                right_angle = dummy_transformer.right_angle
+                
+                # Simulate frame processing
+                dummy_frame = dummy_transformer.transform(None)
+                
                 st.session_state.left_angles.append(left_angle)
                 st.session_state.right_angles.append(right_angle)
                 st.session_state.timestamps.append(time.time())
-
-                # Limit data storage to prevent memory issues (keep last 500 points)
-                if len(st.session_state.left_angles) > 500:
-                    st.session_state.left_angles = st.session_state.left_angles[-500:]
-                    st.session_state.right_angles = st.session_state.right_angles[-500:]
-                    st.session_state.timestamps = st.session_state.timestamps[-500:]
-
-                # Update meters less frequently
-                if st.session_state.frame_counter % (st.session_state.data_collection_interval * 3) == 0:
+                
+                # Update display every 10 iterations
+                if i % 10 == 0:
                     buf_left = draw_angle_meter(left_angle, "Left Arm")
                     buf_right = draw_angle_meter(right_angle, "Right Arm")
                     meter_left.image(buf_left)
                     meter_right.image(buf_right)
+                    
+                    if len(st.session_state.left_angles) > 1:
+                        df = pd.DataFrame({
+                            "Time": st.session_state.timestamps,
+                            "Left Arm Angle": st.session_state.left_angles,
+                            "Right Arm Angle": st.session_state.right_angles
+                        })
+                        df["Relative Time"] = df["Time"] - df["Time"].iloc[0]
+                        graph_placeholder.line_chart(df.set_index("Relative Time")[["Left Arm Angle", "Right Arm Angle"]])
+                
+                time.sleep(0.1)  # Simulate real-time delay
+                
+    else:
+        # Original real camera processing loop
+        while ctx.state.playing:
+            if ctx.video_transformer:
+                st.session_state.frame_counter += 1
+                
+                # Collect data less frequently to reduce memory usage
+                if st.session_state.frame_counter % st.session_state.data_collection_interval == 0:
+                    left_angle = ctx.video_transformer.left_angle
+                    right_angle = ctx.video_transformer.right_angle
 
-                    st.session_state.last_left_meter = buf_left
-                    st.session_state.last_right_meter = buf_right
+                    st.session_state.left_angles.append(left_angle)
+                    st.session_state.right_angles.append(right_angle)
+                    st.session_state.timestamps.append(time.time())
 
-                # Update chart less frequently (every 10 data points)
-                if len(st.session_state.left_angles) % 10 == 0:
-                    df = pd.DataFrame({
-                        "Time": st.session_state.timestamps,
-                        "Left Arm Angle": st.session_state.left_angles,
-                        "Right Arm Angle": st.session_state.right_angles
-                    })
-                    df["Relative Time"] = df["Time"] - df["Time"].iloc[0]
-                    graph_placeholder.line_chart(df.set_index("Relative Time")[["Left Arm Angle", "Right Arm Angle"]])
-                    st.session_state.last_df = df
+                    # Limit data storage to prevent memory issues (keep last 500 points)
+                    if len(st.session_state.left_angles) > 500:
+                        st.session_state.left_angles = st.session_state.left_angles[-500:]
+                        st.session_state.right_angles = st.session_state.right_angles[-500:]
+                        st.session_state.timestamps = st.session_state.timestamps[-500:]
 
-            # Update timer every 30 frames
-            if st.session_state.frame_counter % 30 == 0:
-                elapsed = int(time.time() - st.session_state.start_time)
-                mins, secs = divmod(elapsed, 60)
-                timer_placeholder.markdown(f"""
-                <div class="timer">
-                    ⏳ Session Duration: {mins:02d}:{secs:02d}
-                </div>
-                """, unsafe_allow_html=True)
+                    # Update meters less frequently
+                    if st.session_state.frame_counter % (st.session_state.data_collection_interval * 3) == 0:
+                        buf_left = draw_angle_meter(left_angle, "Left Arm")
+                        buf_right = draw_angle_meter(right_angle, "Right Arm")
+                        meter_left.image(buf_left)
+                        meter_right.image(buf_right)
 
-        time.sleep(0.033)  # ~30 FPS limit
+                        st.session_state.last_left_meter = buf_left
+                        st.session_state.last_right_meter = buf_right
 
-    # After stop
-    if not ctx.state.playing:
-        if st.session_state.last_df is not None:
+                    # Update chart less frequently (every 10 data points)
+                    if len(st.session_state.left_angles) % 10 == 0:
+                        df = pd.DataFrame({
+                            "Time": st.session_state.timestamps,
+                            "Left Arm Angle": st.session_state.left_angles,
+                            "Right Arm Angle": st.session_state.right_angles
+                        })
+                        df["Relative Time"] = df["Time"] - df["Time"].iloc[0]
+                        graph_placeholder.line_chart(df.set_index("Relative Time")[["Left Arm Angle", "Right Arm Angle"]])
+                        st.session_state.last_df = df
+
+                # Update timer every 30 frames
+                if st.session_state.frame_counter % 30 == 0:
+                    elapsed = int(time.time() - st.session_state.start_time)
+                    mins, secs = divmod(elapsed, 60)
+                    timer_placeholder.markdown(f"""
+                    <div class="timer">
+                        ⏳ Session Duration: {mins:02d}:{secs:02d}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            time.sleep(0.033)  # ~30 FPS limit
+
+    # After stop - show results if we have data
+    if (camera_mode != "Dummy Camera (for testing/deployment)" and not ctx.state.playing) or \
+       (camera_mode == "Dummy Camera (for testing/deployment)" and len(st.session_state.left_angles) > 0):
+        if st.session_state.last_df is not None or len(st.session_state.left_angles) > 0:
+            # Create final dataframe if not exists
+            if st.session_state.last_df is None and len(st.session_state.left_angles) > 0:
+                st.session_state.last_df = pd.DataFrame({
+                    "Time": st.session_state.timestamps,
+                    "Left Arm Angle": st.session_state.left_angles,
+                    "Right Arm Angle": st.session_state.right_angles
+                })
+                st.session_state.last_df["Relative Time"] = st.session_state.last_df["Time"] - st.session_state.last_df["Time"].iloc[0]
             st.markdown("""
             <div class="success-box">
                 <h3 style="color:white; margin:0;">✅ Session Completed Successfully!</h3>
