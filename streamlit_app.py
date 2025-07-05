@@ -10,13 +10,13 @@ import pandas as pd
 import math
 import random
 
-# Initialize MediaPipe Pose with optimized settings
+# Initialize MediaPipe Pose with optimized settings for real-time performance
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(
     static_image_mode=False,
-    model_complexity=1,  # Reduced from default 2 for better performance
+    model_complexity=0,  # Reduced to 0 for fastest performance (was 1)
     enable_segmentation=False,  # Disable segmentation for speed
-    min_detection_confidence=0.5,
+    min_detection_confidence=0.7,  # Increased for better accuracy
     min_tracking_confidence=0.5
 )
 mp_drawing = mp.solutions.drawing_utils
@@ -36,6 +36,111 @@ def calculate_angle(a, b, c):
     radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
     angle = np.abs(radians * 180.0 / np.pi)
     return 360 - angle if angle > 180 else angle
+
+
+def update_range_of_motion(left_angle, right_angle):
+    """Update range of motion tracking for both arms."""
+    if left_angle > 0:  # Valid angle
+        st.session_state.left_rom_min = min(st.session_state.left_rom_min, left_angle)
+        st.session_state.left_rom_max = max(st.session_state.left_rom_max, left_angle)
+    
+    if right_angle > 0:  # Valid angle
+        st.session_state.right_rom_min = min(st.session_state.right_rom_min, right_angle)
+        st.session_state.right_rom_max = max(st.session_state.right_rom_max, right_angle)
+
+
+def calculate_accuracy_score(left_angle, right_angle, target_range):
+    """Calculate accuracy score based on how well movements match target range."""
+    scores = []
+    
+    # Score for left arm
+    if target_range["min"] <= left_angle <= target_range["max"]:
+        left_score = 100
+    else:
+        # Calculate distance from target range
+        if left_angle < target_range["min"]:
+            distance = target_range["min"] - left_angle
+        else:
+            distance = left_angle - target_range["max"]
+        # Score decreases based on distance from target
+        left_score = max(0, 100 - (distance * 2))
+    
+    # Score for right arm
+    if target_range["min"] <= right_angle <= target_range["max"]:
+        right_score = 100
+    else:
+        if right_angle < target_range["min"]:
+            distance = target_range["min"] - right_angle
+        else:
+            distance = right_angle - target_range["max"]
+        right_score = max(0, 100 - (distance * 2))
+    
+    # Overall accuracy is average of both arms
+    overall_score = (left_score + right_score) / 2
+    return overall_score
+
+
+def detect_repetitions(angles, current_time):
+    """Detect exercise repetitions based on angle patterns."""
+    if len(angles) < 10:  # Need enough data points
+        return st.session_state.rep_count
+    
+    # Look for peaks in the angle data (indicating full extension)
+    recent_angles = angles[-10:]  # Last 10 angles
+    
+    # Find local maxima (peaks)
+    if len(recent_angles) >= 5:
+        current_angle = recent_angles[-1]
+        prev_angles = recent_angles[-5:-1]
+        
+        # Check if current angle is a peak (higher than surrounding angles)
+        if current_angle > max(prev_angles) and current_angle > 120:  # Peak threshold
+            # Ensure enough time has passed since last peak (avoid double counting)
+            if current_time - st.session_state.last_peak_time > 2:  # 2 seconds minimum
+                st.session_state.rep_count += 1
+                st.session_state.last_peak_time = current_time
+    
+    return st.session_state.rep_count
+
+
+def calculate_movement_consistency(angles):
+    """Calculate movement consistency score based on angle variation."""
+    if len(angles) < 10:
+        return 0
+    
+    # Calculate standard deviation of recent movements
+    recent_angles = angles[-20:]  # Last 20 angles
+    std_dev = np.std(recent_angles)
+    
+    # Convert to consistency score (lower std_dev = higher consistency)
+    # Normalize to 0-100 scale
+    consistency_score = max(0, 100 - std_dev)
+    return consistency_score
+
+
+def get_exercise_recommendations(left_rom, right_rom, accuracy_score):
+    """Provide exercise recommendations based on performance metrics."""
+    recommendations = []
+    
+    # Range of motion recommendations
+    if left_rom < 60:
+        recommendations.append("🔄 Try to increase your left arm range of motion gradually")
+    if right_rom < 60:
+        recommendations.append("🔄 Try to increase your right arm range of motion gradually")
+    
+    # Accuracy recommendations
+    if accuracy_score < 70:
+        recommendations.append("🎯 Focus on maintaining movements within the target range")
+    elif accuracy_score < 85:
+        recommendations.append("✨ Good progress! Try to maintain more consistent movements")
+    else:
+        recommendations.append("🌟 Excellent form! Keep up the great work!")
+    
+    # Balance recommendations
+    if abs(left_rom - right_rom) > 30:
+        recommendations.append("⚖️ Work on balancing movement between both arms")
+    
+    return recommendations
 
 
 class DummyVideoTransformer(VideoTransformerBase):
@@ -117,7 +222,7 @@ class VideoTransformer(VideoTransformerBase):
         self.left_angle = 0
         self.right_angle = 0
         self.frame_count = 0
-        self.process_every_n_frames = 3  # Process every 3rd frame for better performance
+        self.process_every_n_frames = 5  # Process every 5th frame for better performance
 
     def transform(self, frame):
         self.frame_count += 1
@@ -128,8 +233,8 @@ class VideoTransformer(VideoTransformerBase):
         
         # Resize frame for faster processing
         height, width = img.shape[:2]
-        if width > 640:  # Resize if width is greater than 640px
-            scale = 640 / width
+        if width > 480:  # Reduce resolution more aggressively for performance
+            scale = 480 / width
             new_width = int(width * scale)
             new_height = int(height * scale)
             img = cv2.resize(img, (new_width, new_height))
@@ -150,8 +255,6 @@ class VideoTransformer(VideoTransformerBase):
                     (mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
                     (mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
                     (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
-                    (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
-                    (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
                 ]
 
                 # Draw essential connections only
@@ -168,8 +271,7 @@ class VideoTransformer(VideoTransformerBase):
                     landmark = landmarks[idx]
                     if landmark.visibility > 0.5:
                         x, y = int(landmark.x * w), int(landmark.y * h)
-                        cv2.circle(img, (x, y), 6, (0, 255, 0), -1)
-                        cv2.circle(img, (x, y), 8, (0, 180, 0), 2)
+                        cv2.circle(img, (x, y), 4, (0, 255, 0), -1)  # Smaller circles for performance
 
                 # Calculate angles efficiently
                 try:
@@ -325,8 +427,8 @@ def draw_angle_meter(angle, label):
     y = np.sin(theta)
     ax.plot(x, y, color=arc_color, linewidth=6)
 
-    ax.text(0, 0, f"{int(angle)}°", ha='center', va='center', fontsize=16, color='white', fontweight='bold')
-    ax.text(0, -1.3, label, ha='center', va='center', fontsize=12, color='white', fontweight='bold')
+    ax.text(0, 0, f"{int(angle)}°", ha='center', va='center', fontsize=16, color='#2c3e50', fontweight='bold')
+    ax.text(0, -1.3, label, ha='center', va='center', fontsize=12, color='#2c3e50', fontweight='bold')
     ax.text(0, 1.2, level, ha='center', va='center', fontsize=12, color=arc_color, fontweight='bold')
 
     buf = BytesIO()
@@ -400,6 +502,66 @@ def main():
             padding: 1rem;
             border-radius: 10px;
             margin-bottom: 1.5rem;
+            border: 2px solid #2E7D32;
+        }
+        /* Ensure all text has proper contrast */
+        .stMarkdown, .stMarkdown p, .stMarkdown span {
+            color: #2c3e50;
+        }
+        /* Fix Streamlit info boxes */
+        .stAlert > div {
+            background-color: #e3f2fd !important;
+            border: 1px solid #2196f3 !important;
+            color: #1565c0 !important;
+        }
+        .stAlert [data-testid="stMarkdownContainer"] {
+            color: #1565c0 !important;
+        }
+        /* Ensure metrics have good contrast */
+        .metric-value {
+            color: #2c3e50 !important;
+            font-weight: bold !important;
+        }
+        /* Fix metric labels and values */
+        .stMetric {
+            background-color: white !important;
+        }
+        .stMetric > div {
+            color: #2c3e50 !important;
+        }
+        .stMetric label {
+            color: #2c3e50 !important;
+        }
+        .stMetric [data-testid="metric-container"] {
+            background-color: white !important;
+            border: 1px solid #e0e0e0 !important;
+            padding: 1rem !important;
+            border-radius: 8px !important;
+        }
+        /* Custom info box styling */
+        .target-info {
+            background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+            border: 2px solid #2196f3;
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #1565c0;
+            font-weight: bold;
+        }
+        /* Recommendations styling */
+        .recommendations {
+            background: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 5px;
+        }
+        .recommendations h4 {
+            color: #2c3e50;
+            margin-bottom: 0.5rem;
+        }
+        .recommendations ul, .recommendations li {
+            color: #2c3e50;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -447,9 +609,58 @@ def main():
     
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # Exercise Settings
+    st.markdown("""
+    <div class="card">
+        <h3 style="color:#2c3e50; margin-bottom:1rem;">Exercise Settings</h3>
+    """, unsafe_allow_html=True)
+    
+    exercise_type = st.selectbox(
+        "Select Exercise Type:",
+        ["Shoulder Flexion", "Arm Raises", "Shoulder Abduction", "Custom Range"],
+        help="Choose your exercise type to set appropriate target ranges"
+    )
+    
+    # Set target ranges based on exercise type
+    if exercise_type == "Shoulder Flexion":
+        st.session_state.exercise_target_range = {"min": 90, "max": 170}
+        st.markdown("""
+        <div class="target-info">
+            🎯 Target: Raise arms forward from 90° to 170°
+        </div>
+        """, unsafe_allow_html=True)
+    elif exercise_type == "Arm Raises":
+        st.session_state.exercise_target_range = {"min": 60, "max": 150}
+        st.markdown("""
+        <div class="target-info">
+            🎯 Target: Raise arms from 60° to 150°
+        </div>
+        """, unsafe_allow_html=True)
+    elif exercise_type == "Shoulder Abduction":
+        st.session_state.exercise_target_range = {"min": 70, "max": 160}
+        st.markdown("""
+        <div class="target-info">
+            🎯 Target: Raise arms sideways from 70° to 160°
+        </div>
+        """, unsafe_allow_html=True)
+    else:  # Custom Range
+        col1, col2 = st.columns(2)
+        with col1:
+            min_range = st.slider("Minimum Target Angle", 0, 180, 60)
+        with col2:
+            max_range = st.slider("Maximum Target Angle", 0, 180, 150)
+        st.session_state.exercise_target_range = {"min": min_range, "max": max_range}
+        st.markdown(f"""
+        <div class="target-info">
+            🎯 Custom Target: {min_range}° to {max_range}°
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
     # Data collection optimization
     if "data_collection_interval" not in st.session_state:
-        st.session_state.data_collection_interval = 5  # Collect data every 5 frames
+        st.session_state.data_collection_interval = 3  # Reduced from 5 to 3 for more responsive updates
     if "frame_counter" not in st.session_state:
         st.session_state.frame_counter = 0
         
@@ -466,6 +677,16 @@ def main():
         st.session_state.last_df = None
         st.session_state.last_left_meter = None
         st.session_state.last_right_meter = None
+        # Reset ROM tracking
+        st.session_state.left_rom_min = 180
+        st.session_state.left_rom_max = 0
+        st.session_state.right_rom_min = 180
+        st.session_state.right_rom_max = 0
+        # Reset accuracy metrics
+        st.session_state.accuracy_scores = []
+        st.session_state.movement_consistency = []
+        st.session_state.rep_count = 0
+        st.session_state.last_peak_time = 0
         if "enable_tracking" in st.session_state:
             st.session_state.enable_tracking = False
         st.session_state.previous_camera_mode = camera_mode
@@ -486,9 +707,31 @@ def main():
         st.session_state.last_left_meter = None
     if "last_right_meter" not in st.session_state:
         st.session_state.last_right_meter = None
+    
+    # Range of motion tracking
+    if "left_rom_min" not in st.session_state:
+        st.session_state.left_rom_min = 180
+    if "left_rom_max" not in st.session_state:
+        st.session_state.left_rom_max = 0
+    if "right_rom_min" not in st.session_state:
+        st.session_state.right_rom_min = 180
+    if "right_rom_max" not in st.session_state:
+        st.session_state.right_rom_max = 0
+    
+    # Accuracy scoring
+    if "exercise_target_range" not in st.session_state:
+        st.session_state.exercise_target_range = {"min": 60, "max": 150}
+    if "accuracy_scores" not in st.session_state:
+        st.session_state.accuracy_scores = []
+    if "movement_consistency" not in st.session_state:
+        st.session_state.movement_consistency = []
+    if "rep_count" not in st.session_state:
+        st.session_state.rep_count = 0
+    if "last_peak_time" not in st.session_state:
+        st.session_state.last_peak_time = 0
 
     # Main columns layout
-    col1, col2, col3 = st.columns([3, 1, 1])
+    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
 
     with col1:
         st.markdown("""
@@ -514,12 +757,13 @@ def main():
             },
             media_stream_constraints={
                 "video": {
-                    "width": {"min": 320, "ideal": 640, "max": 1280},
-                    "height": {"min": 240, "ideal": 480, "max": 720},
-                    "frameRate": {"min": 5, "ideal": 15, "max": 30}
+                    "width": {"min": 320, "ideal": 480, "max": 640},  # Reduced resolution for performance
+                    "height": {"min": 240, "ideal": 360, "max": 480},
+                    "frameRate": {"min": 10, "ideal": 15, "max": 20}  # Reduced frame rate for performance
                 } if camera_mode != "Camera (for testing/deployment)" else False,
                 "audio": False
             },
+            async_processing=True,  # Enable async processing for better performance
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -537,6 +781,35 @@ def main():
             <h4 style="color:#2c3e50; margin-bottom:1rem;">Right Arm Mobility</h4>
         """, unsafe_allow_html=True)
         meter_right = st.empty()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with col4:
+        st.markdown("""
+        <div class="metric-card">
+            <h4 style="color:#2c3e50; margin-bottom:1rem;">Performance Metrics</h4>
+        """, unsafe_allow_html=True)
+        metrics_display = st.empty()
+        # Initialize with default metrics display
+        metrics_display.markdown("""
+        <div style="text-align: center; padding: 1rem;">
+            <div style="margin-bottom: 0.5rem;">
+                <strong style="color: #2c3e50;">🎯 Accuracy</strong><br>
+                <span style="font-size: 1.2em; color: #3498db; font-weight: bold;">---%</span>
+            </div>
+            <div style="margin-bottom: 0.5rem;">
+                <strong style="color: #2c3e50;">📊 Consistency</strong><br>
+                <span style="font-size: 1.2em; color: #2ecc71; font-weight: bold;">---%</span>
+            </div>
+            <div style="margin-bottom: 0.5rem;">
+                <strong style="color: #2c3e50;">🔄 Repetitions</strong><br>
+                <span style="font-size: 1.2em; color: #e74c3c; font-weight: bold;">0</span>
+            </div>
+            <div style="margin-bottom: 0.5rem;">
+                <strong style="color: #2c3e50;">📏 ROM (L/R)</strong><br>
+                <span style="font-size: 1em; color: #f39c12; font-weight: bold;">0° / 0°</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     # Bottom section
@@ -578,13 +851,28 @@ def main():
             for i in range(100):  # Simulate 100 data points
                 left_angle = dummy_transformer.left_angle
                 right_angle = dummy_transformer.right_angle
+                current_time = time.time()
                 
                 # Simulate frame processing
                 dummy_frame = dummy_transformer.transform(None)
                 
+                # Update range of motion
+                update_range_of_motion(left_angle, right_angle)
+                
+                # Calculate accuracy score
+                accuracy_score = calculate_accuracy_score(left_angle, right_angle, st.session_state.exercise_target_range)
+                st.session_state.accuracy_scores.append(accuracy_score)
+                
+                # Calculate movement consistency
                 st.session_state.left_angles.append(left_angle)
                 st.session_state.right_angles.append(right_angle)
-                st.session_state.timestamps.append(time.time())
+                consistency_score = calculate_movement_consistency(st.session_state.left_angles)
+                st.session_state.movement_consistency.append(consistency_score)
+                
+                # Detect repetitions
+                detect_repetitions(st.session_state.left_angles, current_time)
+                
+                st.session_state.timestamps.append(current_time)
                 
                 # Update display every 10 iterations
                 if i % 10 == 0:
@@ -592,6 +880,33 @@ def main():
                     buf_right = draw_angle_meter(right_angle, "Right Arm")
                     meter_left.image(buf_left)
                     meter_right.image(buf_right)
+                    
+                    # Update performance metrics
+                    left_rom = st.session_state.left_rom_max - st.session_state.left_rom_min
+                    right_rom = st.session_state.right_rom_max - st.session_state.right_rom_min
+                    avg_accuracy = np.mean(st.session_state.accuracy_scores) if st.session_state.accuracy_scores else 0
+                    avg_consistency = np.mean(st.session_state.movement_consistency) if st.session_state.movement_consistency else 0
+                    
+                    metrics_display.markdown(f"""
+                    <div style="text-align: center; padding: 1rem;">
+                        <div style="margin-bottom: 0.5rem;">
+                            <strong>🎯 Accuracy</strong><br>
+                            <span style="font-size: 1.2em; color: #3498db;">{avg_accuracy:.1f}%</span>
+                        </div>
+                        <div style="margin-bottom: 0.5rem;">
+                            <strong>📊 Consistency</strong><br>
+                            <span style="font-size: 1.2em; color: #2ecc71;">{avg_consistency:.1f}%</span>
+                        </div>
+                        <div style="margin-bottom: 0.5rem;">
+                            <strong>🔄 Repetitions</strong><br>
+                            <span style="font-size: 1.2em; color: #e74c3c;">{st.session_state.rep_count}</span>
+                        </div>
+                        <div style="margin-bottom: 0.5rem;">
+                            <strong>📏 ROM (L/R)</strong><br>
+                            <span style="font-size: 1em; color: #f39c12;">{left_rom:.0f}° / {right_rom:.0f}°</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
                     
                     if len(st.session_state.left_angles) > 1:
                         df = pd.DataFrame({
@@ -654,32 +969,87 @@ def main():
                 # Get angles from the transformer
                 left_angle = ctx.video_transformer.left_angle
                 right_angle = ctx.video_transformer.right_angle
+                current_time = time.time()
                 
                 # Only if tracking is enabled, we store the data
                 if st.session_state.enable_tracking:
                     # Collect data less frequently to reduce memory usage
                     if st.session_state.frame_counter % st.session_state.data_collection_interval == 0:
+                        # Update range of motion
+                        update_range_of_motion(left_angle, right_angle)
+                        
+                        # Calculate accuracy and consistency
+                        accuracy_score = calculate_accuracy_score(left_angle, right_angle, st.session_state.exercise_target_range)
+                        st.session_state.accuracy_scores.append(accuracy_score)
+                        
                         st.session_state.left_angles.append(left_angle)
                         st.session_state.right_angles.append(right_angle)
-                        st.session_state.timestamps.append(time.time())
+                        st.session_state.timestamps.append(current_time)
+                        
+                        consistency_score = calculate_movement_consistency(st.session_state.left_angles)
+                        st.session_state.movement_consistency.append(consistency_score)
+                        
+                        # Detect repetitions
+                        detect_repetitions(st.session_state.left_angles, current_time)
 
                         # Limit data storage to prevent memory issues
                         if len(st.session_state.left_angles) > 500:
                             st.session_state.left_angles = st.session_state.left_angles[-500:]
                             st.session_state.right_angles = st.session_state.right_angles[-500:]
                             st.session_state.timestamps = st.session_state.timestamps[-500:]
+                            st.session_state.accuracy_scores = st.session_state.accuracy_scores[-500:]
+                            st.session_state.movement_consistency = st.session_state.movement_consistency[-500:]
                 
-                # Always update the angle meters for live display
+                # Always update the angle meters and metrics for live display
                 if st.session_state.frame_counter % (st.session_state.data_collection_interval * 2) == 0:
                     buf_left = draw_angle_meter(left_angle, "Left Arm")
                     buf_right = draw_angle_meter(right_angle, "Right Arm")
                     meter_left.image(buf_left)
                     meter_right.image(buf_right)
                     
-                    # Store last meters if tracking is enabled
+                    # Update performance metrics
                     if st.session_state.enable_tracking:
+                        left_rom = st.session_state.left_rom_max - st.session_state.left_rom_min
+                        right_rom = st.session_state.right_rom_max - st.session_state.right_rom_min
+                        avg_accuracy = np.mean(st.session_state.accuracy_scores) if st.session_state.accuracy_scores else 0
+                        avg_consistency = np.mean(st.session_state.movement_consistency) if st.session_state.movement_consistency else 0
+                        
+                        metrics_display.markdown(f"""
+                        <div style="text-align: center; padding: 1rem;">
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong>🎯 Accuracy</strong><br>
+                                <span style="font-size: 1.2em; color: #3498db;">{avg_accuracy:.1f}%</span>
+                            </div>
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong>📊 Consistency</strong><br>
+                                <span style="font-size: 1.2em; color: #2ecc71;">{avg_consistency:.1f}%</span>
+                            </div>
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong>🔄 Repetitions</strong><br>
+                                <span style="font-size: 1.2em; color: #e74c3c;">{st.session_state.rep_count}</span>
+                            </div>
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong>📏 ROM (L/R)</strong><br>
+                                <span style="font-size: 1em; color: #f39c12;">{left_rom:.0f}° / {right_rom:.0f}°</span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
                         st.session_state.last_left_meter = buf_left
                         st.session_state.last_right_meter = buf_right
+                    else:
+                        # Show limited metrics when not tracking
+                        metrics_display.markdown(f"""
+                        <div style="text-align: center; padding: 1rem;">
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong>Current Angles</strong><br>
+                                <span style="font-size: 1em; color: #34495e;">L: {left_angle:.0f}° / R: {right_angle:.0f}°</span>
+                            </div>
+                            <div style="color: #7f8c8d; font-size: 0.9em; margin-top: 1rem;">
+                                Enable tracking to see<br>detailed metrics
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
                 
                 # Update chart less frequently (every 10 data points) if tracking is enabled
                 if st.session_state.enable_tracking and len(st.session_state.left_angles) % 10 == 0 and len(st.session_state.left_angles) > 0:
@@ -713,19 +1083,35 @@ def main():
                 if st.session_state.frame_counter % st.session_state.data_collection_interval == 0:
                     left_angle = ctx.video_transformer.left_angle
                     right_angle = ctx.video_transformer.right_angle
+                    current_time = time.time()
 
+                    # Update range of motion
+                    update_range_of_motion(left_angle, right_angle)
+                    
+                    # Calculate accuracy and consistency
+                    accuracy_score = calculate_accuracy_score(left_angle, right_angle, st.session_state.exercise_target_range)
+                    st.session_state.accuracy_scores.append(accuracy_score)
+                    
                     st.session_state.left_angles.append(left_angle)
                     st.session_state.right_angles.append(right_angle)
-                    st.session_state.timestamps.append(time.time())
+                    st.session_state.timestamps.append(current_time)
+                    
+                    consistency_score = calculate_movement_consistency(st.session_state.left_angles)
+                    st.session_state.movement_consistency.append(consistency_score)
+                    
+                    # Detect repetitions
+                    detect_repetitions(st.session_state.left_angles, current_time)
 
                     # Limit data storage to prevent memory issues (keep last 500 points)
                     if len(st.session_state.left_angles) > 500:
                         st.session_state.left_angles = st.session_state.left_angles[-500:]
                         st.session_state.right_angles = st.session_state.right_angles[-500:]
                         st.session_state.timestamps = st.session_state.timestamps[-500:]
+                        st.session_state.accuracy_scores = st.session_state.accuracy_scores[-500:]
+                        st.session_state.movement_consistency = st.session_state.movement_consistency[-500:]
 
-                    # Update meters less frequently
-                    if st.session_state.frame_counter % (st.session_state.data_collection_interval * 3) == 0:
+                    # Update meters and metrics more frequently for better responsiveness
+                    if st.session_state.frame_counter % (st.session_state.data_collection_interval * 2) == 0:
                         buf_left = draw_angle_meter(left_angle, "Left Arm")
                         buf_right = draw_angle_meter(right_angle, "Right Arm")
                         meter_left.image(buf_left)
@@ -733,6 +1119,33 @@ def main():
 
                         st.session_state.last_left_meter = buf_left
                         st.session_state.last_right_meter = buf_right
+                        
+                        # Update performance metrics
+                        left_rom = st.session_state.left_rom_max - st.session_state.left_rom_min
+                        right_rom = st.session_state.right_rom_max - st.session_state.right_rom_min
+                        avg_accuracy = np.mean(st.session_state.accuracy_scores) if st.session_state.accuracy_scores else 0
+                        avg_consistency = np.mean(st.session_state.movement_consistency) if st.session_state.movement_consistency else 0
+                        
+                        metrics_display.markdown(f"""
+                        <div style="text-align: center; padding: 1rem;">
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong style="color: #2c3e50;">🎯 Accuracy</strong><br>
+                                <span style="font-size: 1.2em; color: #3498db; font-weight: bold;">{avg_accuracy:.1f}%</span>
+                            </div>
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong style="color: #2c3e50;">📊 Consistency</strong><br>
+                                <span style="font-size: 1.2em; color: #2ecc71; font-weight: bold;">{avg_consistency:.1f}%</span>
+                            </div>
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong style="color: #2c3e50;">🔄 Repetitions</strong><br>
+                                <span style="font-size: 1.2em; color: #e74c3c; font-weight: bold;">{st.session_state.rep_count}</span>
+                            </div>
+                            <div style="margin-bottom: 0.5rem;">
+                                <strong style="color: #2c3e50;">📏 ROM (L/R)</strong><br>
+                                <span style="font-size: 1em; color: #f39c12; font-weight: bold;">{left_rom:.0f}° / {right_rom:.0f}°</span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
                     # Update chart less frequently (every 10 data points)
                     if len(st.session_state.left_angles) % 10 == 0:
@@ -755,7 +1168,7 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
 
-            time.sleep(0.033)  # ~30 FPS limit
+            time.sleep(0.05)  # Reduced sleep time for better responsiveness (~20 FPS limit)
 
     # After stop - show results if we have data
     if (camera_mode != "Camera (for testing/deployment)" and not ctx.state.playing) or \
@@ -769,13 +1182,75 @@ def main():
                     "Right Arm Angle": st.session_state.right_angles
                 })
                 st.session_state.last_df["Relative Time"] = st.session_state.last_df["Time"] - st.session_state.last_df["Time"].iloc[0]
+                
             st.markdown("""
             <div class="success-box">
                 <h3 style="color:white; margin:0;">✅ Session Completed Successfully!</h3>
-                <p style="color:white; margin:0;">Your rehabilitation data has been recorded.</p>
+                <p style="color:white; margin:0;">Your rehabilitation data has been recorded and analyzed.</p>
             </div>
             """, unsafe_allow_html=True)
 
+            # Calculate final metrics
+            left_rom = st.session_state.left_rom_max - st.session_state.left_rom_min
+            right_rom = st.session_state.right_rom_max - st.session_state.right_rom_min
+            avg_accuracy = np.mean(st.session_state.accuracy_scores) if st.session_state.accuracy_scores else 0
+            avg_consistency = np.mean(st.session_state.movement_consistency) if st.session_state.movement_consistency else 0
+            
+            # Enhanced session summary with performance metrics
+            st.markdown("""
+            <div class="card">
+                <h3 style="color:#2c3e50; margin-bottom:1rem;">📊 Performance Summary</h3>
+            """, unsafe_allow_html=True)
+            
+            # Performance metrics row
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.markdown("""
+                <div style="background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; border: 1px solid #e0e0e0;">
+                    <h4 style="color: #2c3e50; margin: 0 0 0.5rem 0;">🎯 Accuracy Score</h4>
+                    <div style="font-size: 2rem; font-weight: bold; color: #3498db; margin: 0;">{:.1f}%</div>
+                    <p style="color: #7f8c8d; font-size: 0.8rem; margin: 0.5rem 0 0 0;">Target range performance</p>
+                </div>
+                """.format(avg_accuracy), unsafe_allow_html=True)
+            with col2:
+                st.markdown("""
+                <div style="background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; border: 1px solid #e0e0e0;">
+                    <h4 style="color: #2c3e50; margin: 0 0 0.5rem 0;">📊 Consistency Score</h4>
+                    <div style="font-size: 2rem; font-weight: bold; color: #2ecc71; margin: 0;">{:.1f}%</div>
+                    <p style="color: #7f8c8d; font-size: 0.8rem; margin: 0.5rem 0 0 0;">Movement consistency</p>
+                </div>
+                """.format(avg_consistency), unsafe_allow_html=True)
+            with col3:
+                st.markdown("""
+                <div style="background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; border: 1px solid #e0e0e0;">
+                    <h4 style="color: #2c3e50; margin: 0 0 0.5rem 0;">🔄 Repetitions</h4>
+                    <div style="font-size: 2rem; font-weight: bold; color: #e74c3c; margin: 0;">{}</div>
+                    <p style="color: #7f8c8d; font-size: 0.8rem; margin: 0.5rem 0 0 0;">Exercise repetitions</p>
+                </div>
+                """.format(st.session_state.rep_count), unsafe_allow_html=True)
+            with col4:
+                st.markdown("""
+                <div style="background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; border: 1px solid #e0e0e0;">
+                    <h4 style="color: #2c3e50; margin: 0 0 0.5rem 0;">📏 Range of Motion</h4>
+                    <div style="font-size: 1.5rem; font-weight: bold; color: #f39c12; margin: 0;">L: {:.0f}° / R: {:.0f}°</div>
+                    <p style="color: #7f8c8d; font-size: 0.8rem; margin: 0.5rem 0 0 0;">Maximum range achieved</p>
+                </div>
+                """.format(left_rom, right_rom), unsafe_allow_html=True)
+            
+            # Exercise recommendations
+            recommendations = get_exercise_recommendations(left_rom, right_rom, avg_accuracy)
+            if recommendations:
+                st.markdown("""
+                <div class="recommendations">
+                    <h4>💡 Personalized Recommendations</h4>
+                """, unsafe_allow_html=True)
+                for rec in recommendations:
+                    st.markdown(f"• {rec}", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # Final meter readings
             if st.session_state.last_left_meter and st.session_state.last_right_meter:
                 col1, col2 = st.columns(2)
                 with col1:
@@ -794,18 +1269,44 @@ def main():
                     st.image(st.session_state.last_right_meter)
                     st.markdown("</div>", unsafe_allow_html=True)
 
+            # Progress over time chart
             st.markdown("""
             <div class="card">
-                <h3 style="color:#2c3e50; margin-bottom:1rem;">Session Summary</h3>
+                <h3 style="color:#2c3e50; margin-bottom:1rem;">📈 Progress Over Time</h3>
             """, unsafe_allow_html=True)
             st.line_chart(st.session_state.last_df.set_index("Relative Time")[["Left Arm Angle", "Right Arm Angle"]])
             st.markdown("</div>", unsafe_allow_html=True)
 
-            csv = st.session_state.last_df.to_csv(index=False)
+            # Enhanced CSV download with all metrics
+            enhanced_df = st.session_state.last_df.copy()
+            if len(st.session_state.accuracy_scores) > 0:
+                # Ensure lengths match by interpolating if necessary
+                if len(enhanced_df) != len(st.session_state.accuracy_scores):
+                    accuracy_interp = np.interp(np.arange(len(enhanced_df)), 
+                                              np.arange(len(st.session_state.accuracy_scores)), 
+                                              st.session_state.accuracy_scores)
+                    consistency_interp = np.interp(np.arange(len(enhanced_df)), 
+                                                 np.arange(len(st.session_state.movement_consistency)), 
+                                                 st.session_state.movement_consistency)
+                else:
+                    accuracy_interp = st.session_state.accuracy_scores
+                    consistency_interp = st.session_state.movement_consistency
+                
+                enhanced_df["Accuracy_Score"] = accuracy_interp
+                enhanced_df["Consistency_Score"] = consistency_interp
+                enhanced_df["Left_ROM_Min"] = st.session_state.left_rom_min
+                enhanced_df["Left_ROM_Max"] = st.session_state.left_rom_max
+                enhanced_df["Right_ROM_Min"] = st.session_state.right_rom_min
+                enhanced_df["Right_ROM_Max"] = st.session_state.right_rom_max
+                enhanced_df["Total_Repetitions"] = st.session_state.rep_count
+                enhanced_df["Exercise_Target_Min"] = st.session_state.exercise_target_range["min"]
+                enhanced_df["Exercise_Target_Max"] = st.session_state.exercise_target_range["max"]
+            
+            csv = enhanced_df.to_csv(index=False)
             st.download_button(
-                label="📥 Download Full Session Data (CSV)",
+                label="📥 Download Enhanced Session Data (CSV)",
                 data=csv,
-                file_name="neurotrack_session_data.csv",
+                file_name=f"neurotrack_enhanced_session_{int(time.time())}.csv",
                 mime="text/csv",
                 key="download-csv"
             )
